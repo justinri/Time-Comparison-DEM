@@ -1,0 +1,382 @@
+// =============================================================================
+// 19 mm deep - Round Studs - 4 mm Spheres
+// =============================================================================
+
+// For open cascade
+#include "chrono_cascade/ChBodyEasyCascade.h"
+#include "chrono_cascade/ChCascadeDoc.h"
+#include "chrono_cascade/ChCascadeShapeAsset.h"
+
+#include "chrono_postprocess/ChPovRay.h"
+#include "chrono_postprocess/ChPovRayAssetCustom.h"
+ 
+#include "chrono/physics/ChBodyEasy.h"
+#include "chrono/physics/ChParticlesClones.h"
+#include "chrono/physics/ChLinkMotorRotationSpeed.h"
+
+#include "chrono/core/ChFileutils.h"
+
+#include "chrono/physics/ChLinkMotorLinearSpeed.h"
+#include "chrono/physics/ChLinkMotorLinearPosition.h"
+
+#include "chrono/core/ChTimer.h"
+
+#include "chrono/assets/ChTexture.h"
+#include "chrono/assets/ChColorAsset.h"
+
+#include <math.h>
+
+#include "chrono/physics/ChSystemSMC.h"
+#include "chrono/physics/ChContactContainerSMC.h"
+#include "chrono/solver/ChSolverSMC.h"
+
+#include "ray_wave.cpp"
+
+// Use the namespaces of Chrono
+using namespace chrono;
+using namespace postprocess;  
+using namespace cascade;
+
+// Variables
+// Base information
+double base_x = 0;
+double base_y = -.00635;
+double base_z = 0;
+double den_steel = 8050;
+double yng_steel = 200E9;
+double nu_steel = .3;
+double gravity = -9.81;
+double pi = 3.14159;
+
+// Spheres information
+double sphereRadius = .004; 		// [m]
+double nu = .48; 
+double den_rub = 9615.2; 		// [kg/m^3]  Calibrated density
+double yng_rub = 3000000; 		// [Pa] 
+//////double fric_rub = 38;   			// [degrees] 
+int numSpheres = 2732*3;	// The *3  was times to for 19mm_No_grass_thor_001_double_spheres
+
+// Time for one sphere to be cleared from another when falling during sphere creation (from constant acceleration equation)
+double time_sphere_clear = sqrt(sphereRadius/abs(gravity));
+
+// Studs information 0,(.022+.01905),0
+double stud_x = 0;
+double stud_y = 0.022+0.01905;
+double stud_z = 0;
+
+// Camera Information
+double cam_x = 0.3;
+double cam_y = 0.3;
+double cam_z = 0;
+
+// Steps
+double spheres_fall_steps = 15000;
+double Trans_steps = 167360+spheres_fall_steps;
+double All_steps = 401410+spheres_fall_steps;
+
+// Speeds
+double transVel = -0.000222*2;  // [m/s]
+double rotVel   = 0.00872665*2; 	// [rad/s]
+
+// Variables
+// Creating a path to the code
+char code_path[] = "/home/research/jbv7576/projects/19mm_No_grass_thor/code/"; // For thor
+//char code_path[] = "/home/justin/myproject/real_sims/19mm_No_grass_thor/code/"; // For laptop
+char tmpBase_path[] = "based_70.step";
+char base_path[256]; // <- danger, only storage for 256 characters.
+char tmpStuds_path[] = "studs.step";
+char studs_path[256]; // <- danger, only storage for 256 characters.
+
+// after many iterations should we produce a picture
+int numPics = 1000;
+
+void CreateSpheres(ChSystem& msystem, ChPovRay& pov_exporter, const auto& material_spheres) {
+	// Creating falling spheres, note ChBodyEasySphere automatically computes both mass & inertias from the desired density. 
+    auto msphereBody = std::make_shared<ChBodyEasySphere>(sphereRadius,     // radius size
+                                                          den_rub,   		// density
+                                                          true,   			// collide enable
+                                                          true,  			// visualization
+														  ChMaterialSurface::SMC); // Contact method  	
+        msphereBody->SetPos(ChVector<>(-.1 + ChRandom()*.19, 0.03, -.1 + ChRandom()*.19));
+		msphereBody->SetMaterialSurface(material_spheres);
+        msystem.Add(msphereBody);
+   		pov_exporter.Add(msphereBody);
+}
+
+
+// Start program
+int main(int argc, char* argv[]) {
+    // Create the system
+    ChSystemSMC msystem;
+    ChTimer<> timer;
+
+    // The following two lines are optional, since they are the default options. They are added for future reference,
+    // i.e. when needed to change those models.
+    msystem.SetContactForceModel(ChSystemSMC::ContactForceModel::Hertz);
+    msystem.SetSolverType(ChSolver::Type::MINRES);
+//    msystem.Set_G_acc(ChVector<>(0, gravity, 0));
+
+//	// Setting effective radius of curvature (Note, both spheres have the same size)????
+//	double r_curv_eff = 1.0/(1.0/radius + 0);	// Zero because, radius of a wall goes to infinity
+//	collision::ChCollisionInfo::SetDefaultEffectiveCurvatureRadius(r_curv_eff);
+
+    // Create a material (will be used by the spheres)
+    auto material_spheres = std::make_shared<ChMaterialSurfaceSMC>();
+ 	material_spheres->SetYoungModulus(yng_rub*0.001); // This young is changed to the correct one after spheres fall.
+ 	material_spheres->SetPoissonRatio(nu);
+//    material_spheres->SetFriction(friction_coeff);
+//    material_spheres->SetRestitution(restitution_coeff);
+	msystem.UseMaterialProperties(true);
+
+    // Create a material (will be used by the base)
+    auto material_base = std::make_shared<ChMaterialSurfaceSMC>();
+ 	material_base->SetYoungModulus(yng_steel);
+ 	material_base->SetPoissonRatio(nu_steel);
+//    material_spheres->SetFriction(friction_coeff);
+//    material_spheres->SetRestitution(restitution_coeff);
+
+	// Create the ChCascadeDoc, a container that loads the STEP model
+    // and manages its subassembles
+    ChCascadeDoc mydocBase;
+    strncpy(base_path, code_path, sizeof(base_path));    // Combining two strings
+    strncat(base_path, tmpBase_path, sizeof(base_path)); // Combining two strings
+    bool load_ok_base = mydocBase.Load_STEP(base_path);  
+
+	// Ensuring cleats are made and placing them
+    std::shared_ptr<ChBodyEasyCascade> base;
+    if (load_ok_base) {
+       
+        TopoDS_Shape shape2;
+		if (mydocBase.GetNamedShape(shape2, "based_70")) {
+            
+            std::shared_ptr<ChBodyEasyCascade> mbody2 (new ChBodyEasyCascade(shape2, den_steel, true, true));
+            msystem.Add(mbody2);
+   			mbody2->SetPos(ChVector<>(base_x,
+									  base_y,
+									  base_z));
+            mbody2->SetBodyFixed(true); 	
+            base = mbody2;
+		}		
+    }
+
+    // Creating colors to add to the shapes above
+    auto mvisual2 = std::make_shared<ChColorAsset>();
+    mvisual2->SetColor(ChColor(0.1f, 0.1f, 0.1f));
+
+	// Adding color to the shapes above
+    base->AddAsset(mvisual2);
+
+	// Adding material to base
+    base->SetMaterialSurface(material_base);
+
+	// Creating file to export forces
+    std::ofstream forceFile;
+	forceFile.open ("studForces.dat");
+	forceFile << "Forces = x, y, z [N] \n" ;
+
+   // Creating directory for output file if needed
+    const std::string demo_dir = "results";
+    if (ChFileutils::MakeDirectory(demo_dir.c_str()) < 0) {
+        std::cout << "Error creating directory " << demo_dir << std::endl;
+        return 1;
+    }
+
+    // Creates an exporter to POVray
+    ChPovRay pov_exporter = ChPovRay(&msystem);
+
+    // Sets some file names for in-out processes.
+    pov_exporter.SetTemplateFile(GetChronoDataFile("_template_POV.pov"));
+    pov_exporter.SetOutputScriptFile(demo_dir + "/rendering_frames.pov");
+    pov_exporter.SetOutputDataFilebase("my_state");
+    pov_exporter.SetPictureFilebase("picture");
+
+    // Saves files to in subdirectories to avoid cluttering the current directory.
+    const std::string out_dir = demo_dir + "/output";
+    const std::string anim_dir = demo_dir + "/anim";
+    ChFileutils::MakeDirectory(out_dir.c_str());
+    ChFileutils::MakeDirectory(anim_dir.c_str());
+    pov_exporter.SetOutputDataFilebase(out_dir + "/my_state");
+    pov_exporter.SetPictureFilebase(anim_dir + "/picture");
+
+    // Lighting for camera
+    pov_exporter.SetLight(ChVector<>(-.3, .4, .2), ChColor(0.15f, 0.15f, 0.12f), false);
+    pov_exporter.SetCustomPOVcommandsScript(
+        " \
+        light_source {   \
+      <2, 10, -3>  \
+          color rgb<1.2,1.2,1.2> \
+      area_light <4, 0, 0>, <0, 0, 4>, 8, 8 \
+      adaptive 1 \
+      jitter\
+    } \
+    ");
+
+    // Tells the POVray exporter to take care of converting the shapes of that all items
+    pov_exporter.AddAll();
+
+    // Create the two .pov and .ini files for POV-Ray (this must be done only once at the beginning of the simulation).
+    pov_exporter.ExportScript();
+
+	// Taking a pecentage of the rayleigh time step
+	double time_step = 0.20*ray_wave(yng_rub, sphereRadius, den_rub, nu);
+
+	// Setting up spheres falling
+	int steps_to_more_spheres = ceil(time_sphere_clear/time_step)*1.2; // A 20 percent safety factor 
+	int current_step = 0;
+	int current_numSpheres = 0;		 int exit_falling_loop = 0;
+    timer.start();
+    while (true) {
+
+		// Creating spheres
+		if (current_step % steps_to_more_spheres == 0 && current_numSpheres < numSpheres){
+			CreateSpheres(msystem, pov_exporter, material_spheres);
+			current_numSpheres++;
+
+		// Giving Spheres time to fall before exiting to lowering studs
+		} else if (current_numSpheres == numSpheres) {
+			exit_falling_loop++;
+		}
+
+    	msystem.DoStepDynamics(time_step);
+
+		current_step++;
+
+        // Create the incremental nnnn.dat and nnnn.pov files that will be load the pov .ini script in POV-Ray 
+		if (current_step % numPics == 0){
+         	pov_exporter.ExportData();
+		}
+
+		// Giving Spheres time to fall before exiting to lowering studs
+		if (exit_falling_loop >= spheres_fall_steps) {
+			break;
+		}
+    }
+
+	// Changing Young's to correct young's modulus (Need lower one to avoid bouncing)
+    // 	material_spheres->SetYoungModulus(yng_rub);
+
+	// Getting and sphere creation/settling time
+    timer.stop();
+	std::cout << "Steps to create spheres: " << current_step << "\n";
+	std::cout << "Sphere creation and Settling time [s]: " << timer.GetTimeSeconds() << "\n";
+
+
+/*************************************************************************************************************************************/
+	// Letting the user know that we are switching to lowering studs
+	std::cout << "Lowering Studs" << "\n";
+
+    // Adding Studs
+    ChCascadeDoc mydocStuds;
+    strncpy(studs_path, code_path, sizeof(studs_path));
+    strncat(studs_path, tmpStuds_path, sizeof(studs_path));
+    bool load_ok = mydocStuds.Load_STEP(studs_path);  
+
+	// Ensuring cleats are made and placing them
+    std::shared_ptr<ChBodyEasyCascade> studs;
+    if (load_ok) {
+       
+        TopoDS_Shape shape1;
+		if (mydocStuds.GetNamedShape(shape1, "studs")) {
+            
+            std::shared_ptr<ChBodyEasyCascade> mbody1 (new ChBodyEasyCascade(shape1, den_steel, true, true));
+            msystem.Add(mbody1);
+   			mbody1->SetPos(ChVector<>(stud_x,
+									  stud_y,
+									  stud_z));
+            studs = mbody1;
+		}		
+    }		
+
+	// Adding color to studs
+    auto mvisual_studs = std::make_shared<ChColorAsset>();
+    mvisual_studs->SetColor(ChColor(0.9f, 0.4f, 0.2f));
+    studs->AddAsset(mvisual_studs);
+
+	// Adding material to studs... Same as base to make them rigid
+    studs->SetMaterialSurface(material_base);
+
+	// Create the linear motor to move studs down
+	auto linMotor = std::make_shared<ChLinkMotorLinearPosition>();
+	linMotor->Initialize(studs,             	// body A (slave)
+					     base,                  // body B (master)
+					     ChFrame<>(ChVector<>(0,0,0), Q_from_AngAxis(CH_C_PI_2, VECT_Z))  // motor frame, in abs. coords
+    					 );
+
+	auto mlin = std::make_shared<ChFunction_Const>(transVel); 
+	linMotor->SetMotionFunction(mlin);                      	 	// Applies this motion function to the motor
+	msystem.Add(linMotor);
+
+	// Adding studs to view via pov
+    pov_exporter.Add(studs);
+
+	// Runs the second part of simulation. I.e., translation movement of studs
+	int exit_lowering_studs_loop = 0;
+    timer.reset(); // Resetting timer
+    while (true) {
+		// Implementing a dynamic step
+    	msystem.DoStepDynamics(time_step);
+
+        // Create the incremental nnnn.dat and nnnn.pov files that will be load the pov .ini script in POV-Ray 
+		if (exit_lowering_studs_loop % numPics == 0){
+         	pov_exporter.ExportData();
+		}
+
+		exit_lowering_studs_loop++;
+
+		// Giving studs time to lower before they rotate
+		if (exit_lowering_studs_loop >= Trans_steps) {
+			break;
+		}
+    }
+
+	// Getting and sphere creation/settling time
+    timer.stop();
+	std::cout << "Time to lower studs [s]: " << timer.GetTimeSeconds() << "\n";
+
+
+/*************************************************************************************************************************************/
+	// Adds a rotation motor between studs and floor
+	std::cout << "Switching to Rotation" << "\n";
+	msystem.Remove(linMotor);
+    auto rotMotor = std::make_shared<ChLinkMotorRotationSpeed>();
+    rotMotor->Initialize(studs, base, ChFrame<>(ChVector<>(0, 0, 0), Q_from_AngAxis(CH_C_PI_2, VECT_X)));
+    msystem.AddLink(rotMotor);
+	
+	// Creating function for rotation motor
+    auto mfun = std::make_shared<ChFunction_Const>(rotVel);  // [degree/s]
+    rotMotor->SetSpeedFunction(mfun);
+
+	// Runs the third part of simulation. I.e., rotation movement of studs
+	int exit_rotating_studs = 0;
+    timer.reset(); // Resetting timer
+	ChVector<> studForce;
+    while (true) {
+
+    	msystem.DoStepDynamics(time_step);
+
+        // Create the incremental nnnn.dat and nnnn.pov files that will be load the pov .ini script in POV-Ray 
+		if (exit_rotating_studs % numPics == 0){
+         	pov_exporter.ExportData();
+		}
+
+		// Exporting forces to studForce.dat file
+		studForce = studs->GetContactForce();
+		forceFile << studForce.x() << ", " << studForce.y()
+				  << ", " << studForce.z() << "\n" ;
+
+		exit_rotating_studs++;
+
+		// Giving studs time to lower before they rotate
+		if (exit_rotating_studs >= All_steps) {
+			break;
+		}
+    }
+
+	// Getting and sphere creation/settling time
+    timer.stop();
+	std::cout << "Time to rotate studs [s]: " << timer.GetTimeSeconds() << "\n";
+
+	// Closing file that exported forces
+	forceFile.close(); 
+    return 0;
+}

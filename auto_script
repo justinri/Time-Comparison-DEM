@@ -1,0 +1,79 @@
+#!/bin/bash
+
+### Inputs
+numImpacts=1
+numSteps=200000
+numTestToRun=10
+numCores=1
+
+### creating filenames
+filenameYade=sphere_impact.py
+filenameChrono=my_example.cpp
+filenameResults=sphere_impact_results_$numImpacts-cores_$numCores.csv
+filenameYadeResults=tmp_yade.csv
+filenameChronoResults=tmp_chrono.csv
+
+### Ensuring the script has correct number of impacts and steps to run
+sed -i "10s/numImpacts.*/numImpacts = $numImpacts/g" $filenameYade
+sed -i "11s/numSteps.*/numSteps = $numSteps ## Number of steps to run/g" $filenameYade
+(cd code && sed -i "35s/int numImpacts.*/int numImpacts = $numImpacts;/g" $filenameChrono)
+(cd code && sed -i "36s:int numSteps.*:int numSteps = $numSteps; // Number of steps to run:g" $filenameChrono)
+
+#### Creating the results file
+test ! -f $filenameResults || rm -r $filenameResults && touch $filenameResults
+test ! -f $filenameYadeResults || rm -r $filenameYadeResults && touch $filenameYadeResults
+test ! -f $filenameChronoResults || rm -r $filenameChronoResults && touch $filenameChronoResults
+
+### Making sure chrono is built with current model
+(cd build && rm -r * && cmake ../code && make && cd ..) 
+
+### Creating headers:
+echo "I went back and forth between Yade and Chrono" >> $filenameResults
+echo ", Yade Elapsed Time [ms], Chrono  Elapsed Time [ms], ,Yade Time-Step, Chrono Time-Step, ,Yade Total Steps Ran, Chrono Total Steps Ran" >> $filenameResults
+
+### Automating wall time study tests
+for (( num=1; num <= $numTestToRun; num++ )); do
+	yade -x -n -j$numCores $filenameYade | tail -1  >> $filenameYadeResults
+	cd build
+	./my_example | tail >> ../$filenameChronoResults
+	cd ..
+	echo , >> $filenameChronoResults
+done
+
+### Creating one file from the two. Had to do it this way because, I couldn't get the results in the same row.
+for (( num=1; num <= $numTestToRun; num++ )); do
+
+	echo -n "Test $num," >> $filenameResults
+	
+	while IFS="," read -r chrono_col_1 chrono_col_2 chrono_col_3  
+	do
+		while IFS="," read -r yade_col_1 yade_col_2 yade_col_3  
+		do
+				### Elapsed Time
+				echo -n "$yade_col_1," >> $filenameResults
+				echo -n "$chrono_col_1," >> $filenameResults
+				echo -n " ," >> $filenameResults
+				
+				### Time Step
+				echo -n "$yade_col_2," >> $filenameResults
+				echo -n "$chrono_col_2," >> $filenameResults
+				echo -n " ," >> $filenameResults
+				
+				### Total Number of Steps
+				echo -n "$yade_col_3," >> $filenameResults
+				echo -n "$chrono_col_3," >> $filenameResults
+				break
+
+		done < <(tail -n +$num $filenameYadeResults) 
+		break
+	done < <(tail -n +$num $filenameChronoResults)
+	printf "\n" >> $filenameResults
+done
+
+### Auto deleting the two temp files
+rm -r $filenameYadeResults
+rm -r $filenameChronoResults
+
+### Auto creating the sum function
+tmpNum=$(($num + 1))
+echo ",=SUM(B3:B$tmpNum)/$numTestToRun,=SUM(C3:C$tmpNum)/$numTestToRun" >> $filenameResults
