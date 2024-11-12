@@ -24,12 +24,12 @@ for num in range(0, numImpacts):
 	O.bodies.append(sphere(center=(Vector3(2*r*num*1.25, 2*r*num*1.25, 0.0)), radius=r, material='material_spheres', fixed=False)) ### Shere to fall
 	O.bodies.append(sphere(center=(Vector3(2*r*num*1.25, 2*r*num*1.25, 0.15)), radius=r, material='material_spheres', fixed=True)) ### Fixed sphere
 
-## Time step set to 20% of Rayleigh Wave
+## Time step set to 1% of Rayleigh Wave
 O.dt=.01*utils.RayleighWaveTimeStep()
 startTime = datetime.datetime.now()
 
 O.engines=[
-		###Reset all forces stored in Scene::forces (O.forces in python). Typically, this is the first engine to be run at every step. 		In addition, reset those energies that should be reset, if energy tracing is enabled.
+		###Reset all forces stored in Scene::forces (O.forces in python). Typically, this is the first engine to be run at every step. In addition, reset those energies that should be reset, if energy tracing is enabled.
 		## Resets forces and moments that act on bodies
 		ForceResetter(),
 		InsertionSortCollider([Bo1_Sphere_Aabb()]),
